@@ -62,8 +62,8 @@
 }
 
 \title[2016-11-10-lucaetal-root4j]{Reading ROOT data in Java and Spark}
-\author{Jim Pivarski}
-\institute{Princeton -- DIANA}
+\author{Jim Pivarski \and Viktor Khristenko}
+\institute{Princeton/DIANA-HEP \and University of Iowa}
 \date{November 11, 2016}
 
 \begin{document}
@@ -186,7 +186,7 @@ Read ROOT files, perform calculations in Spark. & Spark launches and controls RO
 \begin{tabular}{p{0.85\linewidth} c}
 & \textcolor{red}{verified?} \\
 Can read complex structures (directly via TBaskets). & \textcolor{red}{$\surd$} \\
-Only small corrections are likely. & \textcolor{red}{probably} \\
+Only small corrections remain. & \textcolor{red}{likely} \\
 Well-organized; class/method names mirror ROOT. & \textcolor{red}{$\surd$} \\
 JIT-compiles streamers, rather than generic functions. & \textcolor{red}{$\surd$} \\
 Can write objects to ROOT files as well. & \\
@@ -248,8 +248,6 @@ Read ROOT file like any other format for a DataFrame.
 import org.dianahep.sparkroot._
 val df = spark.sqlContext.read.root(
              "hdfs://path/to/files/*.root")
-
-df.printSchema()
 \end{minted}
 \end{onlyenv}
 \begin{onlyenv}<2>
@@ -257,12 +255,11 @@ df.printSchema()
 df = sqlContext.read \
        .format("org.dianahep.sparkroot") \
        .load("hdfs://path/to/files/*.root")
-
-df.printSchema()
 \end{minted}
 \end{onlyenv}
 
 \begin{verbatim}
+df.printSchema()
 root
  |-- met: float (nullable = false)
  |-- muons: array (nullable = false)
@@ -270,6 +267,7 @@ root
  |    |    |-- pt: float (nullable = false)
  |    |    |-- eta: float (nullable = false)
  |    |    |-- phi: float (nullable = false)
+ |-- jets: array (nullable = false)
 \end{verbatim}
 \end{frame}
 
@@ -295,288 +293,190 @@ only showing top 10 rows
 \end{verbatim}
 \end{frame}
 
+\begin{frame}[fragile]{Example session (\only<1>{Spark}\only<2>{PySpark})}
+\vspace{0.25 cm}
+(This is from a real CMS analysis.)
 
+\begin{onlyenv}<1>
+\small
+\begin{minted}{scala}
+// Bring dollar-sign notation into scope.
+import spark.sqlContext.implicits._
 
+// Compute event weight with columns and constants.
+df.select(($"lumi"*xsec/nGen) * $"LHE_weight"(309))
+  .show()
 
+// Pre-defined function (notation's a little weird).
+val isGoodEvent = (
+    ($"evtHasGoodVtx" === 1) &&
+    ($"evtHasTrg" === 1)     &&
+    ($"tkmet" >= 25.0)       &&
+    ($"Mu_pt" >= 30.0)       &&
+    ($"W_mt" >= 30.0))
 
-%% \begin{frame}{Motivation}
-%% \vspace{0.25 cm}
-%% In a physics analysis using Spark {\small (Oliver Gutsche, Matteo Cremonesi, Cristina Mantilla)}, the first step is data access.
+// Use it.
+println("%d events pass".format(
+                    df.where(isGoodEvent).count()))
+\end{minted}
+\end{onlyenv}
 
-%% \vspace{0.25 cm}
-%% Hard to cross the boundary between ROOT's C++ runtime and Spark's Java Virtual Machine (JVM).
+\begin{onlyenv}<2>
+\small
+\begin{minted}{python}
+# Python trick: make columns Python variables.
+for name in df.schema.names:
+    exec("{0} = df['{0}']".format(name))
 
-%% \vspace{0.25 cm}
-%% \begin{uncoverenv}<2->
-%% \textcolor{darkblue}{Four methods considered:}
-%% \begin{enumerate}
-%% \item Convert all data from ROOT to another format (Avro).
-%% \item Access ROOT inside the JVM via JNI.
-%% \item Access ROOT as an external process (pipe or socket).
-%% \item Run PyROOT in PySpark.
-%% \end{enumerate}
-%% \end{uncoverenv}
+# Look at a few event weights.
+df.select((lumi*xsec/nGen) * LHE_weight[309]).show()
 
-%% \vspace{0.25 cm}
-%% \begin{uncoverenv}<3->
-%% The 2016 analysis used option \textcolor{darkblue}{\#1}, but it's not ideal.
-%% \begin{itemize}
-%% \item Separate conversion step before running Spark.
-%% \item Two copies of the data: extra version control and disk usage.
-%% \end{itemize}
-%% \end{uncoverenv}
-%% \end{frame}
+# Pre-defined function (notation's a little different).
+isGoodEvent = (
+    (evtHasGoodVtx == 1) &
+    (evtHasTrg == 1)     &
+    (tkmet >= 25.0)      &
+    (Mu_pt >= 30.0)      &
+    (W_mt >= 30.0))
 
-%% \begin{frame}{Previously rejected solution}
-%% \vspace{0.25 cm}
-%% \begin{center}
-%% \includegraphics[width=0.9\linewidth]{rootio-screenshot.png}
-%% \end{center}
-%% \end{frame}
+# Use it.
+print "{} events pass".format(
+                  df.where(isGoodEvent).count())
+\end{minted}
+\end{onlyenv}
+\end{frame}
 
-%% \begin{frame}{Previously rejected solution}
-%% \vspace{0.35 cm}
-%% \begin{block}{FreeHEP ROOTIO \scriptsize (\textcolor{blue}{\url{http://java.freehep.org/freehep-rootio/}})}
-%% \vspace{-0.1 cm}
-%% \begin{itemize}
-%% \item Re-implementation of ROOT's I/O in Java.
-%% \item Used as a backend in Java Analysis Studio (JAS).
-%% \item First talks by Tony Johnson in 2001, commits trail off $\sim$2010.
-%% \end{itemize}
-%% \end{block}
+\begin{frame}[fragile]{Example session (\only<1>{Spark}\only<2->{PySpark})}
+\vspace{0.5 cm}
+\small
+\begin{onlyenv}<1>
+\begin{minted}{scala}
+// Use Histogrammar to make histograms.
+import org.dianahep.histogrammar._
+import org.dianahep.histogrammar.sparksql._
+import org.dianahep.histogrammar.bokeh._
 
-%% \vspace{-0.25 cm}
-%% \begin{uncoverenv}<2->
-%% \begin{block}{Why not?}
-%% \vspace{-0.1 cm}
-%% \begin{itemize}
-%% \item Lack of documentation; high-level interface described on website no longer exists.
-%% \item Immediately failed when presented with recent ROOT file.
-%% \item Can't get in touch with Tony Johnson.
-%% \end{itemize}
-%% \end{block}
-%% \end{uncoverenv}
+// Define histogram functions with SparkSQL Columns.
+val h = df.Label(
+         "muon pt" -> Bin(100, 0.0, 50.0, $"Mu_pt"),
+         "W mt" -> Bin(100, 0.0, 120.0, $"W_mt"))
 
-%% \vspace{-0.25 cm}
-%% \begin{uncoverenv}<3->
-%% \begin{block}{Why now?}
-%% \vspace{-0.1 cm}
-%% \begin{itemize}
-%% \item I reexamined its low-level interface (direct access to TBranches/TBaskets), and it works!
-%% \item Only 3 minor bug-fixes needed to read complex CMS AOD.
-%% \end{itemize}
-%% \end{block}
-%% \end{uncoverenv}
-%% \end{frame}
+// Plot the histograms with Bokeh.
+val bokehhist = h.get("muon pt").bokeh()
+plot(bokehhist)
+val bokehhist2 = h.get("W mt").bokeh()
+plot(bokehhist2)
+\end{minted}
+\end{onlyenv}
 
-%% \begin{frame}{Why this is a good solution}
-%% \vspace{0.3 cm}
-%% \begin{block}{Advantage of pure Java code:}
-%% \begin{itemize}
-%% \item No intermediate files: version control and extra disk space.
-%% \item No attempt to run two large projects (ROOT and Java) in the same process, which caused hard-to-trace segmentation faults.
-%% \item No passing of data through a serialized stream (both solutions \textcolor{darkblue}{\#3} and \textcolor{darkblue}{\#4} on the first page).
-%% \end{itemize}
-%% \end{block}
+\begin{onlyenv}<2->
+\begin{minted}{python}
+# Use Histogrammar to make histograms.
+from histogrammar import *
+import histogrammar.sparksql
+histogrammar.sparksql.addMethods(df)
 
-%% \vspace{-0.5 cm}
-%% \begin{uncoverenv}<2->
-%% \begin{block}{Advantage of this particular code:\vspace{-0.5 cm}}
-%% \renewcommand{\arraystretch}{1.2}
-%% \begin{tabular}{p{0.85\linewidth} c}
-%% & verified? \\\hline
-%% Can read complex structures (directly via TBaskets). & $\surd$ \\
-%% Only small corrections are likely. & $\sim$ \\
-%% Well-organized; class/method names mirror ROOT. & $\surd$ \\
-%% JIT-compiles streamers, rather than generic functions. & $\surd$ \\
-%% Can write objects to ROOT files as well. & \\
-%% Has an embedded XRootD client (HDFS and EOS!). & \\
-%% \end{tabular}
-%% \end{block}
-%% \end{uncoverenv}
-%% \end{frame}
+# Define histogram functions with SparkSQL Columns.
+h = df.Label(
+      muon_pt = Bin(100, 0.0, 50.0, Mu_pt),
+      W_mt = Bin(100, 0.0, 120.0, W_mt))
 
-%% \begin{frame}[fragile]{Project: expose ROOT format in Spark}
-%% \vspace{0.5 cm}
-%% \begin{columns}[t]
-%% \column{0.5\linewidth}
-%% \textcolor{darkblue}{\large \bf root4j}
+# Plot the histograms with PyROOT.
+roothist = h.get("muon_pt").plot.root("muon pt")
+roothist.Draw()
+roothist2 = h.get("W_mt").plot.root("W mt")
+roothist2.Draw()
+\end{minted}
+\end{onlyenv}
 
-%% \vspace{0.1 cm}
-%% \begin{itemize}
-%% \item Fork of original FreeHEP with JAS dependency and GUI components removed.
-%% \item Java, minimal dependencies, built with Maven.
-%% \item LGPL 2.1 (like original).
-%% \end{itemize}
+\vspace{-2 cm}
+\begin{uncoverenv}<3>
+\mbox{ } \hfill \includegraphics[width=3 cm]{muonpt.png}\includegraphics[width=3 cm]{wmt.png}
+\end{uncoverenv}
+\end{frame}
 
-%% \column{0.5\linewidth}
-%% \textcolor{darkblue}{\large \bf spark-root}
+\begin{frame}{Performance}
+\vspace{0.5 cm}
+\textcolor{darkblue}{Microbenchmark:} read one nested branch ($\chi^2$ of tracks in events),
 
-%% \vspace{0.1 cm}
-%% \begin{itemize}
-%% \item New project, depends on root4j, Hadoop, Spark.
-%% \item Presents ROOT TChain as a Spark DataFrame.
-%% \item Scala, built with SBT.
-%% \item Apache 2.0.
-%% \end{itemize}
-%% \end{columns}
+\textcolor{white}{Microbenchmark:} lower is better,
 
-%% \vspace{1 cm}
-%% \begin{uncoverenv}<2->
-%% \textcolor{darkblue}{\large User would launch Spark like this:}
+\textcolor{white}{Microbenchmark:} best Java (orange) vs best C++ (blue).
 
-%% \small
-%% \begin{minted}{bash}
-%% spark-shell --packages \
-%%     org.diana-hep:spark-root_2.11:1.0.0
-%% \end{minted}
+\includegraphics[width=\linewidth]{performance.pdf}
 
-%% \normalsize
-%% (Spark fetches JAR and its dependencies from Maven Central.)
-%% \end{uncoverenv}
-%% \end{frame}
+\mbox{ } \hfill time $\longrightarrow$ \hfill \mbox{ }
 
-%% \begin{frame}[fragile]{Example session}
-%% \small
-%% \vspace{0.5 cm}
-%% \begin{minted}{scala}
-%% import org.dianahep.sparkroot._
-%% val df = spark.sqlContext.read.root(
-%%              "hdfs://path/to/files/*.root")
+\vspace{0.15 cm}
+\hfill \textcolor{blue}{\tiny (\url{https://gist.github.com/jpivarski/e8b9da99152bccf70ba187cdab149563})\hspace{-0.5 cm}}
+\end{frame}
 
-%% df.printSchema()
-%% \end{minted}
-%% \begin{verbatim}
-%% root
-%%  |-- met: float (nullable = false)
-%%  |-- muons: array (nullable = false)
-%%  |    |-- element: struct (containsNull = false)
-%%  |    |    |-- pt: float (nullable = false)
-%%  |    |    |-- eta: float (nullable = false)
-%%  |    |    |-- phi: float (nullable = false)
-%%  |-- jets: array (nullable = false)
-%%  |    |-- element: struct (containsNull = false)
-%%  |    |    |-- pt: float (nullable = false)
-%%  |    |    |-- eta: float (nullable = false)
-%%  |    |    |-- phi: float (nullable = false)
-%% \end{verbatim}
-%% \end{frame}
+\begin{frame}{Performance}
 
-%% \begin{frame}[fragile]{Example session}
-%% \small
-%% \begin{verbatim}
-%% df.show()
-%% +---------+--------------------+--------------------+
-%% |      met|               muons|                jets|
-%% +---------+--------------------+--------------------+
-%% | 55.59374|[[28.07075,-1.331...|[[194.19714,-2.65...|
-%% |39.440292|                  []|[[93.64958,-0.273...|
-%% |2.1817229|[[5.523367,-0.375...|[[96.09923,0.7058...|
-%% |  80.5822|[[48.910114,-0.17...|[[165.2686,0.2623...|
-%% | 84.43806|                  []|[[51.87823,1.6442...|
-%% | 84.63146|[[33.84279,-0.062...|[[137.74776,-0.45...|
-%% | 393.8167|[[25.402626,-0.66...|[[481.8268,-1.115...|
-%% |  75.0873|                  []|[[144.62373,-2.21...|
-%% |2.6512942|[[6.851382,2.3145...|[[72.08256,-1.713...|
-%% |36.753353|                  []|[[72.7172,-1.3265...|
-%% +---------+--------------------+--------------------+
-%% only showing top 10 rows
-%% \end{verbatim}
-%% \end{frame}
+{\Large However, best performance is not typical.}
 
-%% \begin{frame}[fragile]{Example session}
-%% \small
-%% \begin{minted}{scala}
-%% case class LorentzVector(pt: Float, eta: Float)
-%% case class Event(met: Float, muons: Seq[LorentzVector])
+\vspace{0.2 cm}
+\begin{itemize}
+\item My attempt at a C++ reader was 120 times worse than the best-case C++. (I got help from a ROOT expert.)
+\item<2-> DataFrame interface only has one way to read; use the best-case Java for that interface.
+\item<3-> Spark preemptively caches DataFrames. Access time is highly dependent on history.
+\end{itemize}
+\end{frame}
 
-%% val rdd = df.as[Event]   // OOP-style interface
+\begin{frame}{Performance}
+\vspace{0.5 cm}
+\begin{itemize}\setlength{\itemsep}{0.4 cm}
+\item Spark's data source interface provides information about which columns will be needed and which rows to filter.
 
-%% import org.dianahep.histogrammar._
-%% import org.dianahep.histogrammar.sparksql._
+\vspace{0.2 cm}
+\textcolor{darkblue}{$\rightarrow$ ROOT files are columnar; we can apply these hints.}
 
-%% // RDD plotting
-%% val h1 = rdd.aggregate(
-%%     Bin(100, 0.0, 20.0, {event: Event => event.met}))
-%%     (new Increment, new Combine)
+\item<2-> RDDs are slow in PySpark because data has to be serialized into Python to execute the Python functions on them.
 
-%% // DataFrame plotting
-%% val h2 = df.histogrammar(Bin(100, 0.0, 20.0, $"met"))
-%% \end{minted}
+\vspace{0.2 cm}
+DataFrames are fast because PySpark sends the Column expression to the JVM and the JVM calculates it in pure Java.
 
-%% \begin{uncoverenv}<2->
-%% \textcolor{darkblue}{\large In Python/PySpark,}
-%% \begin{itemize}
-%% \item SQL-style access to DataFrames is as performant as Scala.
-%% \item OOP-style access isn't (but class declaration isn't necessary).
-%% \end{itemize}
-%% \end{uncoverenv}
-%% \end{frame}
+\vspace{0.2 cm}
+\textcolor{darkblue}{$\rightarrow$ Histogrammar-Python now sends Column expressions to be}
 
-%% \begin{frame}[fragile]{ROOT $\to$ DataFrame features}
-%% \vspace{0.5 cm}
-%% \begin{itemize}\setlength{\itemsep}{0.25 cm}
-%% \item SparkSQL examines user's query, optimizes a work plan, and provides data source with the following information:
-%% \begin{itemize}
-%% \item which fields are required (``pruning'');
-%% \item conservative cuts to use as a prefilter (``filtering'').
-%% \end{itemize}
+\textcolor{white}{$\rightarrow$} \textcolor{darkblue}{computed by Histogrammar-Scala.}
 
-%% \item Matches well with ROOT's layout: can read just the pruned branches and execute the filter at the source.
+\vspace{0.2 cm}
+\textcolor{white}{$\rightarrow$} \textcolor{darkblue}{Python coordinates big, distributed calculations and}
 
-%% \vspace{0.25 cm}
-%% Compare to Parquet, the leading columnar format for big data.
+\textcolor{white}{$\rightarrow$} \textcolor{darkblue}{performs small, local ones.}
+\end{itemize}
+\end{frame}
 
-%% \item Since root4j can write (untested) we should also implement 
-%% \begin{verbatim}
-%% spark.sqlContext.save.root("filename.root")
-%% \end{verbatim}
-%% to share results back to C++ ROOT.
-%% \end{itemize}
+\begin{frame}{Status and plans}
+\vspace{0.25 cm}
+\begin{itemize}
+\item root4j/spark-root are in early development.
+\begin{itemize}
+\item \textcolor{blue}{\url{http://github.com/diana-hep/root4j}}
+\item \textcolor{blue}{\url{http://github.com/diana-hep/spark-root}}
+\end{itemize}
 
-%% \begin{uncoverenv}<2->
-%% \begin{center}
-%% \Large Viktor Khristenko (U.\ Iowa Ph.D.\ student) is developing it with guidance from me.
-%% \end{center}
-%% \end{uncoverenv}
-%% \end{frame}
+\item Histogrammar is mature; new features shown here are online.
+\begin{itemize}
+\item \textcolor{blue}{\url{http://histogrammar.org}}
+\end{itemize}
+\end{itemize}
 
-%% \begin{frame}{Performance?}
-%% \vspace{0.5 cm}
-%% {\Large \textcolor{darkblue}{Not terrible.} \normalsize After a dynamic optimization phase, Java is about a factor of four slower than C++.}
-
-%% \vspace{0.25 cm}
-%% \small
-%% Reading one nested branch ($\chi^2$ of all tracks per event), see
-
-%% \textcolor{blue}{\tiny \url{https://gist.github.com/jpivarski/e8b9da99152bccf70ba187cdab149563}}
-
-%% \includegraphics[width=\linewidth]{performance.pdf}
-
-%% \normalsize
-%% Thanks to Philippe for help writing apples-to-apples C++ code.
-%% \end{frame}
-
-%% %% Ignoring the Java startup phase (training HotSpot optimizations), the Java time is 130-200 ns/item and C++ is 80 ns/item.
-%% %% Compression on this branch is 1.09, so Java is 15-25 MB/second and C++ is 40 MB/second.
-%% %% Java is 1.6 to 2 times slower than C++. That makes sense; typical of Java/C++ performance on the benchmarks game.
-
-%% \begin{frame}{Next steps}
-%% \large
-%% \begin{itemize}\setlength{\itemsep}{0.5 cm}
-%% \item Viktor Khristenko and I are developing a roadmap.
-%% \begin{itemize}
-%% \item We have work-items and are determining reasonable time estimates.
-%% \item \textcolor{blue}{\url{https://github.com/diana-hep/root4j}}
-%% \item \textcolor{blue}{\url{https://github.com/diana-hep/spark-root}}
-%% \end{itemize}
-
-%% \item This should someday be a feature of the CERN Spark cluster and SWAN.
-%% \begin{itemize}
-%% \item Need to coordinate with Luca Canali, Kacper Surdy, Katarzyna Dziedziniewicz-Wojcik and Danilo and Enric.
-%% \end{itemize}
-
-%% \end{itemize}
-%% \end{frame}
+\vspace{0.25 cm}
+\begin{uncoverenv}<2->
+\begin{itemize}
+\item root4j/spark-root plans:
+\begin{enumerate}
+\item Generate DataFrame schemas from ROOT streamers.
+\item Load chains by glob pattern. Partition at ``cluster'' boundaries.
+\item Read ROOT files from HDFS with data locality.
+\item Read ROOT files via XRootD, enabling EOS.
+\item Test with many complex ROOT file samples.
+\item Support {\it writing} to ROOT files (TTrees and histograms).
+\end{enumerate}
+\end{itemize}
+\end{uncoverenv}
+\end{frame}
 
 \end{document}
